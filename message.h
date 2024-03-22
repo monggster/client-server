@@ -5,6 +5,10 @@
 #define NAME_SIZE 20
 #define TEXT_SIZE MESSAGE_SIZE - 2 * NAME_SIZE
 
+#if TEXT_SIZE < 200
+#error TEXT_SIZE is too small
+#endif
+
 typedef struct {
     unsigned char sender[NAME_SIZE];
     unsigned char room[NAME_SIZE];

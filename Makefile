@@ -1,12 +1,12 @@
 COMPILER = gcc
 FLAGS = -g -Wall -fsanitize=address
-SERVER_DEPS = server.o message.o
+SERVER_DEPS = server.o message.o associations.o nodes.o
 CLIENT_DEPS = client.o message.o
 BUILD_DIR = build
 
 COMPILER += $(FLAGS)
 
-all: build server client
+all: server client
 
 build:
 	mkdir -p build
@@ -25,6 +25,12 @@ client.o: build client.c
 
 message.o: build message.c
 	$(COMPILER) message.c -c -o $(BUILD_DIR)/message.o
+
+associations.o: build associations.c
+	$(COMPILER) associations.c -c -o $(BUILD_DIR)/associations.o
+
+nodes.o: build nodes.c
+	$(COMPILER) nodes.c -c -o $(BUILD_DIR)/nodes.o
 
 
 
