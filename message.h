@@ -7,6 +7,7 @@
 
 #define COMMAND_ENTER_ROOM "#enter-room "
 #define COMMAND_SHOW_ROOMS "#show-rooms"
+#define COMMAND_DELETE_ROOM "#delete-room "
 #define COMMAND_EXIT "#exit"
 
 #define NAME_LENGTH_MIN 4

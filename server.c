@@ -116,39 +116,6 @@ char *get_rooms_names()
     return rooms_names;
 }
 
-int room_exists(char *roomname)
-{
-    int exists, i, length;
-    char *tmp;
-    struct nodes *rooms_names_list;
-
-    if(!name_is_valid(roomname)) {
-        return 0;
-    }
-    
-    length = strlen(roomname);
-    exists = 0;
-
-    pthread_mutex_lock(&mutex);
-    rooms_names_list = (struct nodes *)associations_keys(rooms);
-
-    for (i = 0; i < nodes_length(rooms_names_list); i++) {
-        tmp = (char *)nodes_get(rooms_names_list, i); 
-
-        if (length == strlen(tmp)) {
-            if ((strncmp(tmp, roomname, length)) == 0) {
-                exists = 1;  
-                break;
-            }
-        }
-    }
-
-    pthread_mutex_unlock(&mutex);
-
-    return exists;
-}
-
-
 
 void response_enter_room(message_t *message,
         unsigned char *buff, void *client_fd_ptr)
@@ -174,25 +141,17 @@ void response_enter_room(message_t *message,
                 break;
             }
         }
-        pthread_mutex_unlock(&mutex);
 
+        room = associations_get(rooms, roomname);
 
-        /* Если комната существует, добавляем в нее пользователя */
-        if (room_exists(roomname)) {
-            pthread_mutex_lock(&mutex);
-            room = associations_get(rooms, roomname);
-            nodes_push_back(room, client_fd_ptr);
-            pthread_mutex_unlock(&mutex);
-        }
-        /* Иначе создаем новую комнату */
-        else {
-            pthread_mutex_lock(&mutex);
+        /* Если комнаты не существует */
+        if (room == NULL) {
+            /* Создаем ее */
             room = nodes_new();
             associations_set(rooms, roomname, room);
-            /* Добавляем дескриптор в новую комнату */
-            nodes_push_back(room, client_fd_ptr);
-            pthread_mutex_unlock(&mutex);
         }
+        nodes_push_back(room, client_fd_ptr);
+        pthread_mutex_unlock(&mutex);
 
         bzero(buff, MESSAGE_SIZE); 
         bzero(message, MESSAGE_SIZE);
@@ -275,6 +234,40 @@ void response_exit(message_t *message,
     write(*((int *)client_fd_ptr), buff, MESSAGE_SIZE); 
 }
 
+void response_delete_room(message_t *message,
+        unsigned char *buff, void *client_fd_ptr)
+{
+    struct nodes *room;
+    char roomname[NAME_LENGTH_MAX + 1]; 
+    char *roomname_delete;
+
+    memcpy(roomname, message->room, NAME_LENGTH_MAX);
+    roomname_delete = (char *)message->text + strlen(COMMAND_DELETE_ROOM);
+
+    bzero(buff, MESSAGE_SIZE); 
+
+    pthread_mutex_lock(&mutex);
+    room = (struct nodes *)associations_get(rooms, roomname_delete);
+
+    if (room == NULL || nodes_length(room) > 0 ||
+            (strncmp(roomname_delete, START_ROOM, strlen(START_ROOM))) == 0) {
+        bzero(message, MESSAGE_SIZE);
+        memcpy(message->text, ERROR, strlen(ERROR));
+    }
+    else {
+        //ATTENTION DANGER
+        associations_remove(rooms, roomname_delete, associations_pass);
+        bzero(message, MESSAGE_SIZE);
+        memcpy(message->text, SUCCESS, strlen(SUCCESS));
+    }
+    pthread_mutex_unlock(&mutex);
+
+    memcpy(message->sender, SERVER_NAME, strlen(SERVER_NAME));
+    memcpy(message->room, roomname, NAME_LENGTH_MAX);
+
+    message_serialize(message, buff);
+    write(*((int *)client_fd_ptr), buff, MESSAGE_SIZE); 
+}
 
 void response_send_message(message_t *message,
         unsigned char *buff, void *client_fd_ptr)
@@ -305,10 +298,12 @@ void *func(void *client_fd_ptr)
     unsigned char buff[MESSAGE_SIZE]; 
     message_t message;
     int client_fd; 
+    char sender[NAME_LENGTH_MAX + 1];
 
     client_fd = *((int *)client_fd_ptr);
     
     for (;;) { 
+
 
         bzero(buff, MESSAGE_SIZE); 
         bzero(&message, MESSAGE_SIZE);
@@ -316,27 +311,57 @@ void *func(void *client_fd_ptr)
         read(client_fd, buff, MESSAGE_SIZE); 
         message_deserialize(&message, buff);
 
+
+        /////LOGS
+        memset(sender, '\0', NAME_LENGTH_MAX + 1);
+        memcpy(sender, message.sender, NAME_LENGTH_MAX);
+        /*printf("== Got new message. ==\n");
+        message_print(&message);
+        printf("======================\n");*/
+        
+
         /* Войти в комнату */
         if ((strncmp((char *)message.text, COMMAND_ENTER_ROOM,
                         strlen(COMMAND_ENTER_ROOM))) == 0) {
             response_enter_room(&message, buff, client_fd_ptr);
+            
+            //////LOGS
+            printf("%s entered %s.\n", sender, message.room);
         }
         /* Показать комнаты */
         else if ((strncmp((char *)message.text, COMMAND_SHOW_ROOMS,
                         strlen(COMMAND_SHOW_ROOMS))) == 0) {
 
             response_show_rooms(&message, buff, client_fd_ptr);
+
+            //////LOGS
+            printf("%s asked for rooms list.\n", sender);
         }
         /* Выйти */
         else if ((strncmp((char *)message.text, COMMAND_EXIT,
                         strlen(COMMAND_EXIT))) == 0) {
 
             response_exit(&message, buff, client_fd_ptr);
+
+            //////LOGS
+            printf("%s disconnected.\n", sender);
             break;
+        }
+        /* Удалить комнату */
+        else if ((strncmp((char *)message.text, COMMAND_DELETE_ROOM,
+                        strlen(COMMAND_DELETE_ROOM))) == 0) {
+
+            response_delete_room(&message, buff, client_fd_ptr);
+
+            //////LOGS
+            printf("%s deleted room.\n", sender);
         }
         /* Отправить сообщение */
         else {
             response_send_message(&message, buff, client_fd_ptr);
+
+            //////LOGS
+            printf("%s sent new message.\n", sender);
         }
 
     } 
@@ -351,14 +376,22 @@ void join_client(int *client_fd_ptr)
     int client_fd;
     struct nodes *start_room;
     char *rooms_names;
+    char sender[NAME_LENGTH_MAX + 1];
 
     client_fd = *client_fd_ptr;
     rooms_names = get_rooms_names();
 
+    bzero(buff, MESSAGE_SIZE); 
+    bzero(&message, MESSAGE_SIZE);
+
     read(client_fd, buff, MESSAGE_SIZE); 
 
-    bzero(&message, MESSAGE_SIZE);
+    message_deserialize(&message, buff);
+    memset(sender, '\0', NAME_LENGTH_MAX + 1);
+    memcpy(sender, message.sender, NAME_LENGTH_MAX);
+
     bzero(buff, MESSAGE_SIZE); 
+    bzero(&message, MESSAGE_SIZE);
 
 
     memcpy(message.sender, SERVER_NAME, strlen(SERVER_NAME));
@@ -374,6 +407,8 @@ void join_client(int *client_fd_ptr)
     start_room = (struct nodes *)associations_get(rooms, START_ROOM);
     nodes_push_back(start_room, client_fd_ptr);
 
+    printf("User %s joined the room.\n", sender);
+
     free(rooms_names);
     pthread_mutex_unlock(&mutex);
 }
@@ -383,7 +418,7 @@ void *handle_client(void *client_fd_ptr) {
     int client_fd = *((int *)client_fd_ptr);
 
     printf("Got request for connection.\n");
-
+    printf("Request accepted.\n");
     join_client(client_fd_ptr);
 
     pthread_create(&thread_id, NULL, func, client_fd_ptr);
