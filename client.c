@@ -9,7 +9,6 @@
 #include <pthread.h>
 #include <string.h>
 
-
 #include "message.h"
 
 #define DEFAULT_PORT 8080
@@ -119,6 +118,8 @@ void *func_write(void *client_fd_ptr)
 
         n = 0;
         while ((buff[n++] = getchar()) != '\n') ;
+
+        if (n == 1) continue;
 
         bzero(&message, MESSAGE_SIZE);
         memcpy(message.sender, username, NAME_LENGTH_MAX);

@@ -15,7 +15,7 @@ server: $(SERVER_DEPS)
 	$(COMPILER) $(patsubst %,$(BUILD_DIR)/%, $(SERVER_DEPS)) -o $(BUILD_DIR)/server
 
 client: $(CLIENT_DEPS)
-	$(COMPILER) $(patsubst %,$(BUILD_DIR)/%, $(CLIENT_DEPS)) -o $(BUILD_DIR)/client
+	$(COMPILER) -lncurses $(patsubst %,$(BUILD_DIR)/%, $(CLIENT_DEPS)) -o $(BUILD_DIR)/client
 
 server.o: build server.c
 	$(COMPILER) server.c -c -o $(BUILD_DIR)/server.o
