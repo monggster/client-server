@@ -25,11 +25,6 @@
 #define ERROR "ERROR"
 #define SUCCESS "SUCCESS"
 
-#define COMMAND_CREATE_ROOM "#create-room "
-#define COMMAND_ENTER_ROOM "#enter-room "
-#define COMMAND_SHOW_ROOMS "#show-rooms"
-#define COMMAND_EXIT "#exit"
-
 
 pthread_mutex_t mutex;
 pthread_t thread_id;
@@ -81,6 +76,14 @@ int accept_new_connection(int server_fd)
 }
 
 
+static int name_is_valid(const char *name)
+{
+    int l;
+    l = strlen(name);
+    if(l < NAME_LENGTH_MIN || l > NAME_LENGTH_MAX) return 0;
+    return 1;
+}
+
 char *get_rooms_names()
 {
     int i, length; 
@@ -88,23 +91,24 @@ char *get_rooms_names()
     struct nodes *rooms_names_list;
     
     pthread_mutex_lock(&mutex);
-    rooms_names_list = associations_keys(rooms);
+    rooms_names_list = (struct nodes *)associations_keys(rooms);
 
-    length = 0;
+    length = 1;
     for (i = 0; i < nodes_length(rooms_names_list); i++) {
         tmp1 = (char *)nodes_get(rooms_names_list, i);
         length += strlen(tmp1) + 1;
     }
-    
+
     rooms_names = malloc(length + 1);
     rooms_names[length] = '\0';
 
-    tmp1 = rooms_names;
+    *rooms_names = '\n';
+    tmp1 = rooms_names + 1;
     for (i = 0; i < nodes_length(rooms_names_list); i++) {
         tmp2 = (char *)nodes_get(rooms_names_list, i);
         length = strlen(tmp2);
         memcpy(tmp1, tmp2, length); 
-        tmp2[length] = '\n';
+        tmp1[length] = '\n';
         tmp1 += length + 1;
     }
     pthread_mutex_unlock(&mutex);
@@ -112,16 +116,197 @@ char *get_rooms_names()
     return rooms_names;
 }
 
-void *func(void *data) 
+int room_exists(char *roomname)
+{
+    int exists, i, length;
+    char *tmp;
+    struct nodes *rooms_names_list;
+
+    if(!name_is_valid(roomname)) {
+        return 0;
+    }
+    
+    length = strlen(roomname);
+    exists = 0;
+
+    pthread_mutex_lock(&mutex);
+    rooms_names_list = (struct nodes *)associations_keys(rooms);
+
+    for (i = 0; i < nodes_length(rooms_names_list); i++) {
+        tmp = (char *)nodes_get(rooms_names_list, i); 
+
+        if (length == strlen(tmp)) {
+            if ((strncmp(tmp, roomname, length)) == 0) {
+                exists = 1;  
+                break;
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&mutex);
+
+    return exists;
+}
+
+
+
+void response_enter_room(message_t *message,
+        unsigned char *buff, void *client_fd_ptr)
+{
+    int i;
+    struct nodes *room;
+    char roomname[NAME_LENGTH_MAX + 1]; 
+    char *roomname_new;
+
+    roomname_new = (char *)message->text + strlen(COMMAND_ENTER_ROOM);
+
+    if (name_is_valid(roomname_new)) {
+
+        memcpy(roomname, roomname_new, NAME_LENGTH_MAX);
+        roomname[NAME_LENGTH_MAX] = '\0';
+
+        /* Удаляем пользователя из текущей из комнаты */
+        pthread_mutex_lock(&mutex);
+        room = (struct nodes *)associations_get(rooms, (char *)message->room);
+        for (i = 0; i < nodes_length(room); i++) {
+            if (*((int*)nodes_get(room, i)) == *((int *)client_fd_ptr)) {
+                nodes_remove(room, i, nodes_pass);
+                break;
+            }
+        }
+        pthread_mutex_unlock(&mutex);
+
+
+        /* Если комната существует, добавляем в нее пользователя */
+        if (room_exists(roomname)) {
+            pthread_mutex_lock(&mutex);
+            room = associations_get(rooms, roomname);
+            nodes_push_back(room, client_fd_ptr);
+            pthread_mutex_unlock(&mutex);
+        }
+        /* Иначе создаем новую комнату */
+        else {
+            pthread_mutex_lock(&mutex);
+            room = nodes_new();
+            associations_set(rooms, roomname, room);
+            /* Добавляем дескриптор в новую комнату */
+            nodes_push_back(room, client_fd_ptr);
+            pthread_mutex_unlock(&mutex);
+        }
+
+        bzero(buff, MESSAGE_SIZE); 
+        bzero(message, MESSAGE_SIZE);
+
+        memcpy(message->text, SUCCESS, strlen(SUCCESS));
+
+    }
+    else {
+        memcpy(roomname, message->room, NAME_LENGTH_MAX);
+
+        bzero(buff, MESSAGE_SIZE); 
+        bzero(message, MESSAGE_SIZE);
+
+        memcpy(message->text, ERROR, strlen(ERROR));
+
+    }
+
+    memcpy(message->sender, SERVER_NAME, strlen(SERVER_NAME));
+    memcpy(message->room, roomname, NAME_LENGTH_MAX);
+
+    message_serialize(message, buff);
+    write(*((int *)client_fd_ptr), buff, MESSAGE_SIZE); 
+}
+
+void response_show_rooms(message_t *message,
+        unsigned char *buff, void *client_fd_ptr)
+{
+    char roomname[NAME_LENGTH_MAX];
+    char *rooms_names;
+
+    memcpy(roomname, message->room, NAME_LENGTH_MAX);
+    rooms_names = get_rooms_names();
+
+    bzero(buff, MESSAGE_SIZE); 
+    bzero(message, MESSAGE_SIZE);
+
+    memcpy(message->sender, SERVER_NAME, strlen(SERVER_NAME));
+    memcpy(message->room, roomname, NAME_LENGTH_MAX);
+    memcpy(message->text, rooms_names, strlen(rooms_names));
+
+    free(rooms_names);
+
+    message_serialize(message, buff);
+    write(*((int *)client_fd_ptr), buff, MESSAGE_SIZE); 
+}
+
+
+
+void response_exit(message_t *message,
+        unsigned char *buff, void *client_fd_ptr)
+{
+    int i;
+    struct nodes *room;
+    char roomname[NAME_LENGTH_MAX];
+
+    memcpy(roomname, message->room, NAME_LENGTH_MAX);
+    pthread_mutex_lock(&mutex);
+
+    /* Получаем список дескрипторов участников комнаты */
+    room = (struct nodes *)associations_get(rooms, roomname);
+    /* Ищем дескриптор данного пользователя */
+    for (i = 0; i < nodes_length(room); i++) {
+        if (*((int*)nodes_get(room, i)) == *((int *)client_fd_ptr)) {
+          nodes_remove(room, i, nodes_pass);
+          break;
+        }
+    }
+    /* Удаляем его из комнаты */
+    pthread_mutex_unlock(&mutex);
+
+    /* Отправляем сообщение о выходе */
+    bzero(buff, MESSAGE_SIZE); 
+    bzero(message, MESSAGE_SIZE);
+
+    memcpy(message->sender, SERVER_NAME, strlen(SERVER_NAME));
+    memcpy(message->room, roomname, NAME_LENGTH_MAX);
+    memcpy(message->text, COMMAND_EXIT, strlen(COMMAND_EXIT));
+
+    message_serialize(message, buff);
+    write(*((int *)client_fd_ptr), buff, MESSAGE_SIZE); 
+}
+
+
+void response_send_message(message_t *message,
+        unsigned char *buff, void *client_fd_ptr)
+{
+    int i, receiver_fd;
+    struct nodes *room;
+
+    pthread_mutex_lock(&mutex);
+
+    /* Получаем список дескрипторов участников комнаты */
+    room = (struct nodes *)associations_get(rooms, (char *)message->room);
+    for (i = 0; i < nodes_length(room); i++) {
+        receiver_fd = *((int*)nodes_get(room, i));
+        if (receiver_fd != *((int *)client_fd_ptr)) {
+            write(receiver_fd, buff, MESSAGE_SIZE); 
+        }
+    }
+    pthread_mutex_unlock(&mutex);
+
+    bzero(buff, MESSAGE_SIZE); 
+    bzero(message, MESSAGE_SIZE);
+}
+
+
+
+void *func(void *client_fd_ptr) 
 { 
     unsigned char buff[MESSAGE_SIZE]; 
     message_t message;
-    int client_fd, i; 
-    struct nodes *room;
-    char *rooms_names, *room_name, *tmp;
-    char roomname[NAME_LENGTH_MAX];
+    int client_fd; 
 
-    client_fd = *((int *)data);
+    client_fd = *((int *)client_fd_ptr);
     
     for (;;) { 
 
@@ -131,87 +316,35 @@ void *func(void *data)
         read(client_fd, buff, MESSAGE_SIZE); 
         message_deserialize(&message, buff);
 
-
-        if ((strncmp((char *)message.text, COMMAND_CREATE_ROOM,
-                        strlen(COMMAND_CREATE_ROOM))) == 0) {
-
-            //TODO 
-            memcpy(roomname, message.room, NAME_LENGTH_MAX);
-            tmp = message.text + strlen(COMMAND_ENTER_ROOM);
-            i = strlen(tmp);
-            if (i > 20) {
-                memcpy(message.sender, SERVER_NAME, strlen(SERVER_NAME));
-                memcpy(message.text, ERROR, strlen(ERROR);
-            }
-            else {
-                room_name = malloc(i + 1);
-                memcpy(room_name, tmp, i + 1);
-            }
-
+        /* Войти в комнату */
+        if ((strncmp((char *)message.text, COMMAND_ENTER_ROOM,
+                        strlen(COMMAND_ENTER_ROOM))) == 0) {
+            response_enter_room(&message, buff, client_fd_ptr);
         }
-            //TODO переход в комнату
-            //
-            //
-            //TODO definы перенести в message.h
+        /* Показать комнаты */
         else if ((strncmp((char *)message.text, COMMAND_SHOW_ROOMS,
                         strlen(COMMAND_SHOW_ROOMS))) == 0) {
 
-            memcpy(roomname, message.room, NAME_LENGTH_MAX);
-            rooms_names = get_rooms_names();
-
-            bzero(buff, MESSAGE_SIZE); 
-            bzero(&message, MESSAGE_SIZE);
-
-            memcpy(message.sender, SERVER_NAME, strlen(SERVER_NAME));
-            memcpy(message.room, roomname, NAME_LENGTH_MAX);
-            memcpy(message.text, rooms_names, strlen(rooms_names);
-
-            message_serialize(&message, buff);
-
-            write(client_fd, buff, MESSAGE_SIZE); 
-            free(rooms_names);
+            response_show_rooms(&message, buff, client_fd_ptr);
         }
+        /* Выйти */
         else if ((strncmp((char *)message.text, COMMAND_EXIT,
                         strlen(COMMAND_EXIT))) == 0) {
 
-
-            memcpy(roomname, message.room, NAME_LENGTH_MAX);
-            pthread_mutex_lock(&mutex);
-
-            /* Получаем список дескрипторов участников комнаты */
-            room = (struct nodes *)associations_get(rooms, roomname);
-            /* Ищем дескриптор данного пользователя */
-            for (i = 0; i < nodes_length(room); i++) {
-                if (*((int*)nodes_get(room, i)) == client_fd) {
-                    break;
-                }
-            }
-            /* Удаляем его из комнаты */
-            nodes_remove(room, i, nodes_pass);
-            pthread_mutex_unlock(&mutex);
-
-            /* Отправляем сообщение о выходе */
-            bzero(buff, MESSAGE_SIZE); 
-            bzero(&message, MESSAGE_SIZE);
-
-            memcpy(message.sender, SERVER_NAME, strlen(SERVER_NAME));
-            memcpy(message.room, roomname, NAME_LENGTH_MAX);
-            memcpy(message.text, COMMAND_EXIT, strlen(COMMAND_EXIT));
-
-            message_serialize(&message, buff);
-            write(client_fd, buff, MESSAGE_SIZE); 
-
-            printf("Disconnected.\n");
+            response_exit(&message, buff, client_fd_ptr);
             break;
         }
-        //TODO else отправить сообщения всем участникам комнаты
+        /* Отправить сообщение */
+        else {
+            response_send_message(&message, buff, client_fd_ptr);
+        }
 
     } 
     pthread_exit(NULL);
 } 
 
 
-void join_client(int *data)
+void join_client(int *client_fd_ptr)
 {
     unsigned char buff[MESSAGE_SIZE]; 
     message_t message;
@@ -219,7 +352,7 @@ void join_client(int *data)
     struct nodes *start_room;
     char *rooms_names;
 
-    client_fd = *data;
+    client_fd = *client_fd_ptr;
     rooms_names = get_rooms_names();
 
     read(client_fd, buff, MESSAGE_SIZE); 
@@ -239,25 +372,25 @@ void join_client(int *data)
     /* Добавление пользователя в комнату */
     pthread_mutex_lock(&mutex);
     start_room = (struct nodes *)associations_get(rooms, START_ROOM);
-    nodes_push_back(start_room, data);
+    nodes_push_back(start_room, client_fd_ptr);
 
     free(rooms_names);
     pthread_mutex_unlock(&mutex);
 }
 
 
-void *handle_client(void *data) {
-    int client_fd = *((int *)data);
+void *handle_client(void *client_fd_ptr) {
+    int client_fd = *((int *)client_fd_ptr);
 
     printf("Got request for connection.\n");
 
-    join_client(data);
+    join_client(client_fd_ptr);
 
-    pthread_create(&thread_id, NULL, func, data);
+    pthread_create(&thread_id, NULL, func, client_fd_ptr);
     pthread_join(thread_id, NULL);
 
     close(client_fd);
-    free(data);
+    free(client_fd_ptr);
     pthread_exit(NULL);
 }
 

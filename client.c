@@ -14,14 +14,6 @@
 
 #define DEFAULT_PORT 8080
 #define DEFAULT_HOST "127.0.0.1"
-#define NAME_LENGTH_MIN 4
-#define NAME_LENGTH_MAX 20
-
-#if NAME_LENGTH_MIN > NAME_LENGTH_MAX
-#error NAME_LENGTH_MAX must be bigger than NAME_LENGTH_MIN
-#elif NAME_LENGTH_MAX > NAME_SIZE
-#error NAME_LENGTH_MAX can not be bigger than NAME_SIZE
-#endif
 
 
 char username[NAME_LENGTH_MAX + 1];
@@ -82,13 +74,13 @@ static void get_username()
 
 
 /* Читает сообщения от сервера */
-void *func_read(void *data)
+void *func_read(void *client_fd_ptr)
 {
     unsigned char buff[MESSAGE_SIZE];
     message_t message;
     int client_fd;
 
-    client_fd = *((int *)data);
+    client_fd = *((int *)client_fd_ptr);
 
     for (;;) {
         bzero(buff, MESSAGE_SIZE);
@@ -99,7 +91,7 @@ void *func_read(void *data)
 
         memcpy(roomname, message.room, NAME_LENGTH_MAX);
 
-        printf("(%s) @%s: %s", roomname, message.sender, message.text);
+        printf("(%s) @%s: %s\n", roomname, message.sender, message.text);
         if ((strncmp((char *)message.text, "#exit", 5)) == 0) {
             printf("Client Exit...\n");
             break;
@@ -109,13 +101,13 @@ void *func_read(void *data)
 }
 
 /* Отправляет сообщения на сервер */
-void *func_write(void *data)
+void *func_write(void *client_fd_ptr)
 {
     unsigned char buff[MESSAGE_SIZE];
     message_t message;
     int n, client_fd;
 
-    client_fd = *((int *)data);
+    client_fd = *((int *)client_fd_ptr);
 
     for (;;) {
 
@@ -131,7 +123,7 @@ void *func_write(void *data)
         bzero(&message, MESSAGE_SIZE);
         memcpy(message.sender, username, NAME_LENGTH_MAX);
         memcpy(message.room, roomname, NAME_LENGTH_MAX);
-        memcpy(message.text, buff, strlen((char *)buff));
+        memcpy(message.text, buff, strlen((char *)buff) - 1);
         message_serialize(&message, buff);
 
         write(client_fd, buff, MESSAGE_SIZE);
@@ -168,7 +160,7 @@ void join_server(int client_fd)
     read(client_fd, buff, MESSAGE_SIZE); 
     message_deserialize(&message, buff);
 
-    printf("Available rooms:\n%s\n", message.text);
+    printf("Available rooms:%s\n", message.text);
 
     memcpy(roomname, message.room, NAME_LENGTH_MAX);
 }
